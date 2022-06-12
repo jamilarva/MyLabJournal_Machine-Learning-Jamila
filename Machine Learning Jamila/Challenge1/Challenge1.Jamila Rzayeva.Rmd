@@ -62,8 +62,8 @@ library(tidyverse)
 library(tidyquant)
 library(broom)
 library(umap)
-
-
+library(DT)
+library(ggrepe)
 
 
 
