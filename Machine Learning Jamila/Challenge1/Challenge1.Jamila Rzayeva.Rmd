@@ -1,4 +1,5 @@
 ---
+TUHH (4ever)
 title: "Challenge - Company Segmentation"
 author: "Jamila Rzayeva"
 date: "2022-06-12"
@@ -61,13 +62,9 @@ library(tidyverse)
 library(tidyquant)
 library(broom)
 library(umap)
-library(DT)
-library(ggrepel)
 
-# <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3
-library("wesanderson") # <3 <3 <3 <3 <3 <3 <3 <3 <3 
-# <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3
-```
+
+
 
 
 # Data
