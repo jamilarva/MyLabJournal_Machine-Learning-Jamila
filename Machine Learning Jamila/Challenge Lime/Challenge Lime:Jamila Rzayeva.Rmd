@@ -1,0 +1,209 @@
+---
+title: "Challenge - LIME"
+author: "Jamila Rzayeva"
+date: "2022-06-12"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    collapsed: false
+    number_sections: false
+    toc_depth: 3
+    #code_folding: hide
+---
+```{css, echo=FALSE}
+body {
+  color: white;
+  background-color: #ffc1cc;
+  font-family: Futura;
+}
+.list-group-item, .list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {
+  color: white;
+  background-color: #ff758d ;
+  border-color: #white;
+  border-width: 5px;
+}
+```
+
+# Part 1: Recreate `plot_features()`
+Take the explanation data and use the first case to create a plot similar to the output of `plot_features().`
+```{r, fig.height= 8 }
+#Import Library
+library(tidyverse)    
+library(recipes)      
+library(readxl)      
+library(h2o)          
+library(lime)
+library(readr)
+library(dplyr)
+library(purrr)
+
+# Import Data
+
+# Helper Function
+process_data <- function(data, defs) {
+  def_list <- defs %>%
+  fill(...1, .direction = "down") %>%
+  filter(!is.na(...2)) %>%
+  separate(...2, into = c("key", "value"), sep = " '", remove = TRUE) %>%
+  rename(column_name = ...1) %>%
+  mutate(key = as.numeric(key)) %>%
+  mutate(value = value %>% str_replace(pattern = "'", replacement = "")) %>%
+  split(.$column_name) %>%
+  map(~ select(., -column_name)) %>%
+  map(~ mutate(., value = as_factor(value))) 
+  
+  for (i in seq_along(def_list)) {
+    list_name <- names(def_list)[i]
+    colnames(def_list[[i]]) <- c(list_name, paste0(list_name, "_value"))
+  }
+  
+  merged <- list(HR_Data = data) %>%
+  append(def_list, after = 1) %>%
+  reduce(left_join) %>%
+  select(-one_of(names(def_list))) %>%
+  set_names(str_replace_all(names(.), pattern = "_value", 
+                            replacement = "")) %>%
+  select(sort(names(.))) %>%
+  mutate_if(is.character, as.factor) %>%
+  mutate(BusinessTravel = BusinessTravel %>% fct_relevel("Non-Travel", 
+                                                         "Travel_Rarely", 
+                                                         "Travel_Frequently"),
+          MaritalStatus  = MaritalStatus %>% fct_relevel("Single", 
+                                                         "Married", 
+                                                         "Divorced"))
+  return(merged)
+}
+
+employee_tb1 <- read_csv("raw_data/HR-employee-attrition.csv")
+definitions_tb1 <- read_excel("raw_data/data_definitions.xlsx", sheet = 1, col_names = FALSE)
+
+attrition_tb1 <- process_data(employee_tb1, definitions_tb1)
+
+# Split it
+set.seed(seed = 1113)
+split_obj <- rsample::initial_split(attrition_tb1, prop = 0.75,)
+
+# Test and Training
+training <- rsample::training(split_obj)
+testing  <- rsample::testing(split_obj)
+
+recipie <- recipe(Attrition ~ ., data = training) %>%
+  step_zv(all_predictors()) %>%
+  step_mutate_at(c("JobLevel", "StockOptionLevel"), fn = as.factor) %>% 
+  prep()
+
+
+train_tb1 <- bake(recipie, new_data = training)
+test_tb1  <- bake(recipie, new_data = testing)
+
+# Standard H2O set up
+h2o.init()
+split_h2o <- h2o.splitFrame(as.h2o(train_tb1), ratios = c(0.75), seed = 1234)
+train_h2o <- split_h2o[[1]]
+valid_h2o <- split_h2o[[2]]
+test_h2o  <- as.h2o(test_tb1)
+y <- "Attrition"
+x <- setdiff(names(train_h2o), y)
+
+# Run AutoML
+h2o_model <- h2o.automl(x = x,
+                        y = y,
+                        training_frame    = train_h2o,
+                        validation_frame  = valid_h2o,
+                        leaderboard_frame = test_h2o,
+                        max_runtime_secs  = 30,
+                        nfolds            = 5)
+
+leader <- h2o_model@leader
+
+setdiff( leader@allparameters$x, colnames(test_tb1) )
+
+predictions_tbl <- leader %>% 
+  h2o.predict(newdata = as.h2o(test_tb1)) %>%
+  as_tibble() %>%
+  bind_cols(
+    test_tb1 %>%
+      select(Attrition, EmployeeNumber)
+  )
+
+explainer <- train_tb1 %>%
+  select(-Attrition) %>%
+  lime(
+    model           = leader,
+    bin_continuous  = TRUE,
+    n_bins          = 4,
+    quantile_bins   = TRUE
+  )
+
+explanation <- test_tb1 %>%
+  slice(1) %>%
+  select(-Attrition) %>%
+  lime::explain(
+    
+    # Explainer object
+    explainer = explainer,
+    # Binary classification model: 1
+    n_labels   = 1,
+    # Features to return
+    n_features = 8,
+    # Linear Models
+    n_permutations = 5000,
+    # 1 is a good place to start
+    kernel_width   = 1
+  )
+# Original
+plot_features(explanation = explanation, ncol = 1)
+
+# Recreated
+ggplot(explanation %>% arrange(feature_weight), 
+       aes(x=reorder(feature_desc, -feature_weight), 
+           y=feature_weight, 
+           fill = ifelse(feature_weight<0, 'Contradicts', 'Supports'))) +
+  geom_bar(stat="identity")  + 
+  geom_col(aes_(~feature_desc, ~feature_weight)) +
+  labs(
+    title = "Case:1 \nLabel: No\nProbability: \nExplanation Fit:",
+    x="Feature",
+    y="Weight",
+    fill =""
+  ) + coord_flip() +
+  scale_fill_manual("legend", values = c("Supports" = wes_palette("Darjeeling1",1), 
+                                         "Contradicts" = wes_palette("Darjeeling1",2)[2]))+ 
+  theme(legend.position = "bottom")
+
+explanation <- test_tb1 %>%
+    slice(1:20) %>%
+    select(-Attrition) %>%
+    lime::explain(
+        explainer = explainer,
+        n_labels   = 1,
+        n_features = 8,
+        n_permutations = 5000,
+        kernel_width   = 0.5
+    )
+```
+
+# Part 2: Recreate `plot_explanations()`
+```{r, fig.height= 8 }
+# Original
+plot_explanations(explanation)
+
+# Recreated
+num_cases <- factor(explanation$case %>% as.numeric())
+
+ggplot(explanation, aes(x=num_cases, y=feature_desc, fill= feature_weight)) + 
+  scale_x_discrete(drop = FALSE) + 
+  labs(
+    x="Case",
+    y="Feature",
+    fill ="Feature weight"
+  ) + 
+  geom_tile()  + 
+  scale_fill_gradient2(low=wes_palette("Moonrise3", 1),
+                       mid=wes_palette("Moonrise1", 3)[3] ,
+                       high=wes_palette("Moonrise3", 2)[2]) +
+  facet_wrap(~ label) +
+  theme(legend.position = "bottom") +
+  theme_tq()
+```
