@@ -1,0 +1,225 @@
+---
+title: "Challenge - Supervised Machine Learning"
+author: "Jamila Rzayeva"
+date: "2022-06-12"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    collapsed: false
+    number_sections: false
+    toc_depth: 3
+    #code_folding: hide
+---
+
+```{css, echo=FALSE}
+body {
+  color: white;
+  background-color: #ffc1cc;
+  font-family: Futura;
+}
+.list-group-item, .list-group-item.active, .list-group-item.active:focus, .list-group-item.active:hover {
+  color: white;
+  background-color: #ff758d ;
+  border-color: #white;
+  border-width: 5px;
+}
+```
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+    echo = TRUE,
+    message = FALSE,
+    warning = FALSE
+    )
+```
+
+# Challenge Summary
+
+In this session we did not use the recipes packages to prepare our data. This is going to be your challenge. For further information take a look at the last session or just use google. Prepare the data for the models with the steps provided below. Remember, you don’t need to set the flags by yourself (see all_nominal()).
+
+
+# Libraries
+
+Load the following libraries. 
+```{r, fig.height= 8 }
+library(tidyverse)
+library(tidymodels)
+library(broom.mixed)
+library(readr)
+library(ggplot2)
+library(parsnip)
+library(recipes)
+library(rsample)
+library(yardstick)
+library(rpart.plot)
+library(tidyr)
+library(vip)
+
+# <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3
+library("wesanderson") # <3 <3 <3 <3 <3 <3 <3 <3 <3 
+# <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3 <3
+
+# Table Help
+color <- toString(wes_palette("Darjeeling1", 2)[2])
+longString = paste("$(this.api().table().header()).css({'color':'#ffff', 'background-color' : '", 
+                   color, 
+                   "'});") #Format the table header
+
+pretty.tables <- function(tb1) {
+    datatable(tb1, class = 'cell-border stripe', 
+              rownames = FALSE,
+              options = list(
+                initComplete = JS(
+                  "function(settings, json) {", 
+                  longString ,
+                  "}")))
+}
+```
+
+# Build a model
+
+```{r, fig.height= 8 }
+orders_tb1 <- read_rds("C:/Users/alexa/Documents/Germany/Hamburg2020/TUHH/SuSe 2021/BWL/ml_journal-adarche/raw_data/bike_orderlines.rds")
+
+sales_tb1 <- orders_tb1 %>%
+    select(total_price, model, category_2, frame_material) %>%
+    
+    group_by(model, category_2, frame_material) %>%
+    summarise(total_sales = sum(total_price)) %>%
+    ungroup() %>%
+    
+    arrange(desc(total_sales))
+
+sales_tb1 %>%
+    mutate(category_2 = as_factor(category_2) %>% 
+               fct_reorder(total_sales, .fun = max) %>% 
+               fct_rev()) %>%
+    
+    ggplot(aes(frame_material, total_sales)) +
+    geom_violin() +
+    geom_jitter(width = 0.1, alpha = 0.5, color = wes_palette("Darjeeling1", 1)[1]) +
+    #coord_flip() +
+    facet_wrap(~ category_2) +
+    scale_y_continuous(labels = scales::dollar_format(scale = 1e-6, suffix = "M", accuracy = 0.1)) +
+    tidyquant::theme_tq() +
+    
+    labs(
+        title = "Total Sales for Each Model",
+        x = "Frame Material", y = "Revenue"
+    )
+```
+
+
+```{r, fig.height= 8 }
+features_tb1 <- readRDS("C:/Users/alexa/Documents/Germany/Hamburg2020/TUHH/SuSe 2021/BWL/ml_journal-adarche/raw_data/bike_features_tbl.rds")  %>% 
+  unnest(`Brake Rotor`) 
+
+features_tb1 <- features_tb1 %>% 
+    select(model:url, `Rear Derailleur`, `Shift Lever`) %>% 
+    mutate(
+      `shimano dura-ace`        = `Rear Derailleur` %>% str_to_lower() %>% str_detect("shimano dura-ace ") %>% as.numeric(),
+      `shimano ultegra`         = `Rear Derailleur` %>% str_to_lower() %>% str_detect("shimano ultegra ") %>% as.numeric(),
+      `shimano 105`             = `Rear Derailleur` %>% str_to_lower() %>% str_detect("shimano 105 ") %>% as.numeric(),
+      `shimano tiagra`          = `Rear Derailleur` %>% str_to_lower() %>% str_detect("shimano tiagra ") %>% as.numeric(),
+      `Shimano sora`            = `Rear Derailleur` %>% str_to_lower() %>% str_detect("shimano sora") %>% as.numeric(),
+      `shimano deore`           = `Rear Derailleur` %>% str_to_lower() %>% str_detect("shimano deore(?! xt)") %>% as.numeric(),
+      `shimano slx`             = `Rear Derailleur` %>% str_to_lower() %>% str_detect("shimano slx") %>% as.numeric(),
+      `shimano grx`             = `Rear Derailleur` %>% str_to_lower() %>% str_detect("shimano grx") %>% as.numeric(),
+      `Shimano xt`              = `Rear Derailleur` %>% str_to_lower() %>% str_detect("shimano deore xt |shimano xt ") %>% as.numeric(),
+      `Shimano xtr`             = `Rear Derailleur` %>% str_to_lower() %>% str_detect("shimano xtr") %>% as.numeric(),
+      `Shimano saint`           = `Rear Derailleur` %>% str_to_lower() %>% str_detect("shimano saint") %>% as.numeric(),
+      `SRAM red`                = `Rear Derailleur` %>% str_to_lower() %>% str_detect("sram red") %>% as.numeric(),
+      `SRAM force`              = `Rear Derailleur` %>% str_to_lower() %>% str_detect("sram force") %>% as.numeric(),
+      `SRAM rival`              = `Rear Derailleur` %>% str_to_lower() %>% str_detect("sram rival") %>% as.numeric(),
+      `SRAM apex`               = `Rear Derailleur` %>% str_to_lower() %>% str_detect("sram apex") %>% as.numeric(),
+      `SRAM xx1`                = `Rear Derailleur` %>% str_to_lower() %>% str_detect("sram xx1") %>% as.numeric(),
+      `SRAM x01`                = `Rear Derailleur` %>% str_to_lower() %>% str_detect("sram x01|sram xo1") %>% as.numeric(),
+      `SRAM gx`                 = `Rear Derailleur` %>% str_to_lower() %>% str_detect("sram gx") %>% as.numeric(),
+      `SRAM nx`                 = `Rear Derailleur` %>% str_to_lower() %>% str_detect("sram nx") %>% as.numeric(),
+      `SRAM sx`                 = `Rear Derailleur` %>% str_to_lower() %>% str_detect("sram sx") %>% as.numeric(),
+      `SRAM sx`                 = `Rear Derailleur` %>% str_to_lower() %>% str_detect("sram sx") %>% as.numeric(),
+      `Campagnolo potenza`      = `Rear Derailleur` %>% str_to_lower() %>% str_detect("campagnolo potenza") %>% as.numeric(),
+      `Campagnolo super record` = `Rear Derailleur` %>% str_to_lower() %>% str_detect("campagnolo super record") %>% as.numeric(),
+      `shimano nexus`           = `Shift Lever`     %>% str_to_lower() %>% str_detect("shimano nexus") %>% as.numeric(),
+      `shimano alfine`          = `Shift Lever`     %>% str_to_lower() %>% str_detect("shimano alfine") %>% as.numeric()
+    ) %>% 
+  # Remove original columns  
+  select(-c(`Rear Derailleur`, `Shift Lever`)) %>% 
+  # Set all NAs to 0
+  mutate_if(is.numeric, ~replace(., is.na(.), 0))
+  
+features_tb1 <- features_tb1 %>% 
+  mutate(id = row_number()) %>% 
+  mutate(frame_material = factor(frame_material)) %>%
+  select(id, everything(), -url) 
+
+set.seed(seed = 1113)
+split_obj <- rsample::initial_split(features_tb1, prop   = 0.75, strata = "category_2")
+
+training <- training(split_obj)
+testing  <- testing(split_obj)
+
+training <- training %>% set_names(str_replace_all(names(training), " |-", "_"))
+testing  <- testing  %>% set_names(str_replace_all(names(testing),  " |-", "_"))
+```
+
+# Create features with the recipes package
+
+```{r, fig.height= 8 }
+model <- 
+linear_reg("regression") %>%
+  set_engine("lm")
+
+recipe <- recipe(price  ~ ., data = training %>% select(-c(model:weight), -category_1, -c(category_3:gender))) %>%
+  step_novel(all_predictors(), -all_numeric()) %>%
+  step_dummy(all_nominal(), -all_outcomes()) %>%
+  step_zv(all_predictors())
+
+```
+
+# Bundle the model and recipe with the workflow package
+
+```{r, fig.height= 8 }
+bike_fit <- workflow() %>% 
+    add_model(model) %>% 
+    add_recipe(recipe) %>%
+    fit(training)
+```
+
+## Step 6: Evaluate the model
+
+```{r, fig.height= 8 }
+# Function to evaluate model with the yardstick package
+bike_fit %>%   
+    predict(testing) %>%
+    bind_cols(testing %>% select(price)) %>%
+    yardstick::metrics(truth = price, estimate = .pred) %>%
+    pretty.tables()
+```
+
+## Step 7: Visualize feature importance of model(s)
+
+```{r fig.height=18}
+# Visualize Feature Importance via Complex Linear Regression Model
+bike_fit %>%
+  pull_workflow_fit() %>%
+  vip(aesthetics = list(fill= wes_palette("Darjeeling2", 2)[2]))
+
+bike_fit %>%
+  pull_workflow_fit() %>%
+  tidy() %>% na.omit() %>%
+  arrange(p.value) %>% 
+  mutate(term = as_factor(term) %>% fct_rev()) %>%
+  
+  ggplot(aes(x = estimate, y = term)) +
+  geom_point(color = wes_palette("Darjeeling1", 1), size = 3) +
+  ggrepel::geom_label_repel(aes(label = scales::dollar(estimate, accuracy = 1, suffix = " €", prefix = "")),
+                            size = 4, fill = "white", color = wes_palette("Darjeeling1", 5)[5], direction = "both", nudge_x = T, nudge_y = T) +
+  scale_x_continuous(labels = scales::dollar_format(suffix = " €", prefix = "")) +
+  theme_minimal() +
+  labs(title = "Feature Importance of Bike Orders",
+       subtitle = "Complex Linear Regression Model",
+       x = "Estimate",
+       y = "Feature") 
+
+```
