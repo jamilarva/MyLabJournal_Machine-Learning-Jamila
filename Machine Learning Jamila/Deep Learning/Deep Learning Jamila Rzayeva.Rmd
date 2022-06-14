@@ -13,11 +13,316 @@ output:
     #code_folding: hide
 ---
 
-```{r setup, include=FALSE}
+{r setup, include=FALSE}
 knitr::opts_chunk$set(message=FALSE,warning=FALSE, cache=TRUE)
-```
 
-**IMPORTANT:** You can delete everything in here and start fresh. You might want to start by not deleting anything above this line until you know what that stuff is doing.
+
+{r}
+library(tidyverse)
+library(keras)
+library(lime)
+library(recipes)
+library(rsample)
+library(yardstick)
+library(corrr)
+
+
+{r}
+churn_data_raw <- read.csv("./06_dl_files/WA_Fn-UseC_-Telco-Customer-Churn.csv")
+
+glimpse(churn_data_raw)
+
+
+{r}
+churn_data_tbl <- churn_data_raw %>%
+                  select(Churn, everything(), -customerID) %>%
+                  tidyr::drop_na()
+
+
+{r}
+# Split test/training sets
+set.seed(100)
+train_test_split <- rsample::initial_split(churn_data_tbl, prop =0.8)
+train_test_split
+
+## <Analysis/Assess/Total>
+## <5626/1406/7032>
+
+# Retrieve train and test sets
+train_tbl <- training(train_test_split)
+test_tbl  <- testing(train_test_split)
+
+
+{r}
+churn_data_tbl %>% ggplot(aes(x = tenure)) + 
+                     geom_histogram(binwidth = 0.5, fill =  "#2DC6D6") +
+                     labs(
+                       title = "Tenure Counts Without Binning",
+                       x     = "tenure (month)"
+                       )
+
+
+{r}
+churn_data_tbl %>% ggplot(aes(x = tenure)) + 
+  geom_histogram(bins = 6, color = "white", fill =  "#2DC6D6") +
+  labs(
+    title = "Tenure Counts With Six Bins",
+    x     = "tenure (month)"
+  )
+
+
+{r}
+churn_data_tbl %>% ggplot(aes(x = TotalCharges)) + 
+                     geom_histogram(bins = 100, fill =  "#2DC6D6") +
+                     labs(
+                       title = "TotalCharges Histogram, 100 bins",
+                       x     = "TotalCharges"
+                       )
+
+
+{r}
+churn_data_tbl_mod <- churn_data_tbl %>% 
+  mutate(TotalCharges = log10(TotalCharges))
+churn_data_tbl_mod %>% ggplot(aes(x = TotalCharges)) + 
+                     geom_histogram(bins = 100, fill =  "#2DC6D6") +
+                     labs(
+                       title = "TotalCharges Histogram, 100 bins",
+                       x     = "TotalCharges"
+                       )
+
+
+{r}
+# Determine if log transformation improves correlation 
+# between TotalCharges and Churn
+
+train_tbl %>%
+    select(Churn, TotalCharges) %>%
+    mutate(
+        Churn = Churn %>% as.factor() %>% as.numeric(),
+        LogTotalCharges = log(TotalCharges)
+        ) %>%
+    correlate() %>%
+    focus(Churn) %>%
+    fashion()
+
+
+
+{r}
+churn_data_tbl %>% 
+        pivot_longer(cols      = c(Contract, InternetService, MultipleLines, PaymentMethod), 
+                     names_to  = "feature", 
+                     values_to = "category") %>% 
+        ggplot(aes(category)) +
+          geom_bar(fill = "#2DC6D6") +
+          facet_wrap(~ feature, scales = "free") +
+          labs(
+            title = "Features with multiple categories: Need to be one-hot encoded"
+          ) +
+          theme(axis.text.x = element_text(angle = 25, 
+                                           hjust = 1))
+
+
+{r}
+# Create recipe
+rec_obj <- recipe(Churn ~ ., data = train_tbl) %>%
+    step_rm(Churn) %>% 
+    step_discretize(tenure, options = list(cuts = 6)) %>%
+    step_log(TotalCharges) %>%
+    step_dummy(all_nominal(), -all_outcomes(), one_hot = T) %>%
+    step_center(all_predictors(), -all_outcomes()) %>%
+    step_scale(all_predictors(), -all_outcomes()) %>%
+    prep(data = train_tbl)
+
+
+{r}
+x_train_tbl <- bake( rec_obj , new_data =  train_tbl)
+x_test_tbl  <- bake( rec_obj , new_data =  test_tbl)
+
+
+
+{r}
+y_train_vec <- ifelse( train_tbl$Churn == "Yes", TRUE, FALSE )
+y_test_vec  <- ifelse( test_tbl$Churn  == "Yes", TRUE, FALSE)
+
+
+
+{r}
+# Building our Artificial Neural Network
+model_keras <- keras_model_sequential()
+
+model_keras %>% 
+    # First hidden layer
+    layer_dense(
+        units              = 16, 
+        kernel_initializer = "uniform", 
+        activation         = "relu", 
+        input_shape        = ncol(x_train_tbl)) %>% 
+    # Dropout to prevent overfitting
+    layer_dropout(rate = 0.1) %>%
+    # Second hidden layer
+    layer_dense(
+        units              = 16, 
+        kernel_initializer = "uniform", 
+        activation         = "relu") %>% 
+    # Dropout to prevent overfitting
+    layer_dropout(rate = 0.1) %>%
+    # Output layer
+    layer_dense(
+        units              = 1, 
+        kernel_initializer = "uniform", 
+        activation         = "sigmoid") %>% 
+    # Compile ANN
+    compile(
+        optimizer = 'adam',
+        loss      = 'binary_crossentropy',
+        metrics   = c('accuracy')
+    )
+model_keras
+
+
+{r}
+x_train_mrx = as.matrix(x_train_tbl)
+x_train_mrx 
+
+fit_keras <- keras::fit(
+    object = model_keras,
+    x = x_train_mrx, 
+    y = y_train_vec , 
+    epochs = 35 , 
+    batch_size = 50 ,
+    validation_split = 0.3 
+    )
+
+fit_keras
+
+
+{r}
+plot(fit_keras) +
+  labs(title = "Deep Learning Training Results") +
+  theme(legend.position  = "bottom", 
+        strip.placement  = "inside",
+        strip.background = element_rect(fill = "#grey"))
+
+
+{r}
+# Predicted Class
+yhat_keras_class_vec <- predict_classes(object = model_keras, x = as.matrix(x_test_tbl)) %>%
+    as.vector()
+
+# Predicted Class Probability
+yhat_keras_prob_vec  <- predict_proba(object = model_keras, x = as.matrix(x_test_tbl)) %>%
+    as.vector()
+
+
+{r}
+# Format test data and predictions for yardstick metrics
+estimates_keras_tbl <- tibble(
+    truth      = as.factor(y_test_vec) %>% fct_recode(yes = "1", no = "0"),
+    estimate   = as.factor(yhat_keras_class_vec) %>% fct_recode(yes = "1", no = "0"),
+    class_prob = yhat_keras_prob_vec
+)
+
+estimates_keras_tbl
+
+
+{r}
+# Confusion Table
+... %>% ...
+
+# Accuracy
+... %>% ...
+
+# AUC
+... %>% ...
+
+# Precision
+tibble(
+    precision = ...,
+    recall    = ...
+)
+
+# F1-Statistic
+estimates_keras_tbl %>% f_meas(truth, estimate, beta = 1)
+
+
+{r}
+class(model_keras)
+
+# Setup lime::model_type() function for keras
+model_type.keras.engine.sequential.Sequential  <- function(x, ...) {
+    return("classification")
+}
+
+
+{r}
+# Setup lime::predict_model() function for keras
+predict_model.keras.engine.sequential.Sequential <- function(x, newdata, type, ...) {
+    pred <- predict_proba(object = x, x = as.matrix(newdata))
+    return(data.frame(Yes = pred, No = 1 - pred))
+}
+
+
+{r}
+library(lime)
+# Test our predict_model() function
+predict_model(x = model_keras, newdata = x_test_tbl, type = 'raw') %>%
+    tibble::as_tibble()
+
+# Run lime() on training set
+explainer <- lime::lime(
+    ...            = ..., 
+    ...            = ... , 
+    bin_continuous = FALSE)
+
+explanation <- lime::explain(
+    x_test_tbl[1:10,], 
+    ...    = ..., 
+    ...    = ..., 
+    ...    = ...,
+    ...    = ...)
+
+
+{r}
+# Feature correlations to Churn
+corrr_analysis <- x_train_tbl %>%
+    mutate(Churn = y_train_vec) %>%
+    correlate() %>%
+    focus(Churn) %>%
+    rename(feature = rowname) %>%
+    arrange(abs(Churn)) %>%
+    mutate(feature = as_factor(feature)) 
+corrr_analysis
+
+
+{r}
+# Correlation visualization
+corrr_analysis %>%
+  ggplot(aes(x = ..., y = fct_reorder(..., desc(...)))) +
+  geom_point() +
+  
+  # Positive Correlations - Contribute to churn
+  geom_segment(aes(xend = ..., yend = ...), 
+               color = "red", 
+               data = corrr_analysis %>% filter(... > ...)) +
+  geom_point(color = "red", 
+             data = corrr_analysis %>% filter(... > ...)) +
+  
+  # Negative Correlations - Prevent churn
+  geom_segment(aes(xend = 0, yend = feature), 
+               color = "#2DC6D6", 
+               data = ...) +
+  geom_point(color = "#2DC6D6", 
+             data = ...) +
+  
+  # Vertical lines
+  geom_vline(xintercept = 0, color = "#f1fa8c", size = 1, linetype = 2) +
+  geom_vline( ... ) +
+  geom_vline( ... ) +
+  
+  # Aesthetics
+  labs( ... )
+
+*IMPORTANT:* You can delete everything in here and start fresh. You might want to start by not deleting anything above this line until you know what that stuff is doing.
 
 This is an `.Rmd` file. It is plain text with special features. Any time you write just like this, it will be compiled to normal text in the website. If you put a \# in front of your text, it will create a top level-header.
 
@@ -47,9 +352,9 @@ So far this is just a blog where you can write in plain text and serve your writ
 
 So, let's say you are learning how to make a histogram in R. For example, maybe you want to sample 100 numbers from a normal distribution with mean = 0, and standard deviation = 1, and then you want to plot a histogram. You can do this right here by using an r code block, like this:
 
-```{r}
+{r}
 samples <- rnorm(100, mean=0, sd=1)
 hist(samples)
-```
+
 
 When you knit this R Markdown document, you will see that the histogram is printed to the page, along with the R code. This document can be set up to hide the R code in the webpage, just delete the comment (hashtag) from the cold folding option in the yaml header up top. For purposes of letting yourself see the code, and me see the code, best to keep it the way that it is. You'll learn that all of these things and more can be customized in each R code block.
